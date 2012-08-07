@@ -19,10 +19,10 @@
 
 import codec
 from cStringIO import StringIO
-from spec import load, pythonize
-from codec import EOF
+from twisted.python import log
+from spec import pythonize
 
-class Frame:
+class Frame(object):
 
   METHOD = "frame_method"
   HEADER = "frame_header"
@@ -42,7 +42,7 @@ class Frame:
   def __str__(self):
     return "[%d] %s" % (self.channel, self.payload)
 
-class Payload:
+class Payload(object):
 
   class __metaclass__(type):
 
@@ -58,9 +58,9 @@ class Payload:
 
   type = None
 
-  def encode(self, enc): abstract
+  def encode(self, enc): raise NotImplementedError
 
-  def decode(spec, dec): abstract
+  def decode(spec, dec): raise NotImplementedError
 
 class Method(Payload):
 
@@ -146,6 +146,11 @@ class Header(Payload):
       v = self.properties.get(f.name)
       if v != None:
         c.encode(f.type, v)
+    unknown_props = set(self.properties.keys()) - \
+                    set([f.name for f in self.klass.fields])
+    if unknown_props:
+        log.msg("Unknown message properties: %s" % ", ".join(unknown_props))
+
     c.flush()
     enc.encode_longstr(buf.getvalue())
 

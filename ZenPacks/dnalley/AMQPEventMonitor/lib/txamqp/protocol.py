@@ -1,15 +1,14 @@
 # coding: utf-8
-from twisted.python import log
-from twisted.internet import defer, protocol, reactor
+from twisted.internet import defer, protocol
 from twisted.internet.task import LoopingCall
 from twisted.protocols import basic
 from txamqp import spec
-from txamqp.codec import Codec, EOF
+from txamqp.codec import Codec
 from txamqp.connection import Header, Frame, Method, Body, Heartbeat
 from txamqp.message import Message
 from txamqp.content import Content
-from txamqp.queue import TimeoutDeferredQueue, Empty, Closed as QueueClosed
-from txamqp.client import TwistedEvent, TwistedDelegate, Closed
+from txamqp.queue import TimeoutDeferredQueue, Closed as QueueClosed
+from txamqp.client import TwistedEvent, Closed
 from cStringIO import StringIO
 import struct
 from time import time
@@ -52,7 +51,7 @@ class AMQChannel(object):
         self.queue.put(frame)
 
     @defer.inlineCallbacks
-    def invoke(self, method, args, content = None):
+    def invoke(self, method, args, content=None):
         if self.closed:
             raise Closed(self.reason)
         frame = Frame(self.id, Method(method, *args))
@@ -72,13 +71,10 @@ class AMQChannel(object):
 
         try:
             if not nowait and method.responses:
-                resp = self.responses.get()
-                yield resp
-                resp = resp.payload
+                resp = (yield self.responses.get()).payload
 
                 if resp.method.content:
-                    content = readContent(self.responses)
-                    yield content
+                    content = yield readContent(self.responses)
                 else:
                     content = None
                 if resp.method in method.responses:
@@ -185,20 +181,17 @@ class FrameReceiver(protocol.Protocol, basic._PauseableMixin):
 
 @defer.inlineCallbacks
 def readContent(queue):
-    frame = queue.get()
-    yield frame
+    frame = yield queue.get()
     header = frame.payload
     children = []
     for i in range(header.weight):
-        content = readContent(queue)
-        yield content
+        content = yield readContent(queue)
         children.append(content)
     size = header.size
     read = 0
     buf = StringIO()
     while read < size:
-        body = queue.get()
-        yield body
+        body = yield queue.get()
         content = body.payload.content
         buf.write(content)
         read += len(content)
@@ -211,7 +204,7 @@ class AMQClient(FrameReceiver):
     # Max unreceived heartbeat frames. The AMQP standard says it's 3.
     MAX_UNSEEN_HEARTBEAT = 3
 
-    def __init__(self, delegate, vhost, spec, heartbeat=0):
+    def __init__(self, delegate, vhost, spec, heartbeat=0, clock=None, insist=False):
         FrameReceiver.__init__(self, spec)
         self.delegate = delegate
 
@@ -238,8 +231,12 @@ class AMQClient(FrameReceiver):
         self.outgoing.get().addCallback(self.writer)
         self.work.get().addCallback(self.worker)
         self.heartbeatInterval = heartbeat
+        self.insist = insist
         if self.heartbeatInterval > 0:
-            self.checkHB = reactor.callLater(self.heartbeatInterval *
+            if clock is None:
+                from twisted.internet import reactor as clock
+            self.clock = clock
+            self.checkHB = self.clock.callLater(self.heartbeatInterval *
                           self.MAX_UNSEEN_HEARTBEAT, self.checkHeartbeat)
             self.sendHB = LoopingCall(self.sendHeartbeat)
             d = self.started.wait()
@@ -255,7 +252,7 @@ class AMQClient(FrameReceiver):
     def reschedule_checkHB(self):
         if self.checkHB.active():
             self.checkHB.cancel()
-        self.checkHB = reactor.callLater(self.heartbeatInterval *
+        self.checkHB = self.clock.callLater(self.heartbeatInterval *
               self.MAX_UNSEEN_HEARTBEAT, self.checkHeartbeat)
 
     def check_0_8(self):
@@ -307,14 +304,11 @@ class AMQClient(FrameReceiver):
 
     @defer.inlineCallbacks
     def dispatch(self, queue):
-        frame = queue.get()
-        yield frame
-        channel = self.channel(frame.channel)
-        yield channel
+        frame = yield queue.get()
+        channel = yield self.channel(frame.channel)
         payload = frame.payload
         if payload.method.content:
-            content = readContent(queue)
-            yield content
+            content = yield readContent(queue)
         else:
             content = None
         # Let the caller deal with exceptions thrown here.
@@ -336,8 +330,7 @@ class AMQClient(FrameReceiver):
 
     @defer.inlineCallbacks
     def processFrame(self, frame):
-        ch = self.channel(frame.channel)
-        yield ch
+        ch = yield self.channel(frame.channel)
         if frame.payload.type == Frame.HEARTBEAT:
             self.lastHBReceived = time()
         else:
@@ -362,9 +355,12 @@ class AMQClient(FrameReceiver):
 
         yield self.started.wait()
 
-        channel0 = self.channel(0)
-        yield channel0
-        yield channel0.connection_open(self.vhost)
+        channel0 = yield self.channel(0)
+        if self.check_0_8():
+            result = yield channel0.connection_open(self.vhost, insist=self.insist)
+        else:
+            result = yield channel0.connection_open(self.vhost)
+        defer.returnValue(result)
 
     def sendHeartbeat(self):
         self.sendFrame(Frame(0, Heartbeat()))
@@ -382,4 +378,3 @@ class AMQClient(FrameReceiver):
             if self.checkHB.active():
                 self.checkHB.cancel()
         self.close(reason)
-
