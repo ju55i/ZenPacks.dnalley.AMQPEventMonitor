@@ -84,12 +84,11 @@ class AMQPEventsTask(ObservableMixin):
     @inlineCallbacks
     def _onConnSucc(self, conn, queue, username, password):
         yield conn.authenticate(username, password)
-        chan = conn.channel(1)
-        yield chan
+        chan = yield conn.channel(1)
         yield chan.channel_open()
         yield chan.queue_declare(queue=queue, durable=True, exclusive=False, auto_delete=False)
         yield chan.basic_consume(queue=queue, no_ack=True, consumer_tag="zenoss")
-        queue = conn.queue("zenoss")
+        queue = yield conn.queue("zenoss")
         self._eventService.sendEvent(dict(
                             summary='Successfully connected to AMQP queue %s' % self._config.zAMQPQueue,
                             component='amqp',
@@ -97,10 +96,9 @@ class AMQPEventsTask(ObservableMixin):
                             device=self._devId,
                             severity=Clear,
                             agent=COLLECTOR_NAME))
-        yield queue
 
         while True:
-            msg = queue.get()
+            msg = yield queue.get()
 
             # Map AMQP priority to zenoss severity
             severity = msg.fields.get("priority", 7)
@@ -126,13 +124,10 @@ class AMQPEventsTask(ObservableMixin):
                        )
             self._eventService.sendEvent(evt)
 
-            yield msg
-
         # Never get here
         yield chan.basic_cancel("zenoss")
         yield chan.channel_close()
-        chan0 = conn.channel(0)
-        yield chan0
+        chan0 = yield conn.channel(0)
         yield chan0.connection_close()
         reactor.stop()
 
