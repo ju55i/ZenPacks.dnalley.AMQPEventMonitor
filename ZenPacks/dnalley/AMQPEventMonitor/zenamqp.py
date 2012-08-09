@@ -9,6 +9,7 @@
 #
 ###########################################################################
 
+import json
 import os
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), "lib"))
@@ -100,28 +101,19 @@ class AMQPEventsTask(ObservableMixin):
         while True:
             msg = yield queue.get()
 
-            # Map AMQP priority to zenoss severity
-            severity = msg.fields.get("priority", 7)
-            severity = severity > 9 or severity < 0 and 7 or severity # 0 <= s <= 9 (default 7)
-            severity = SEVERITY_MAP[severity]
+            base_evt = {"device":self._devId,"summary":"No summary","message":"No message","agent":COLLECTOR_NAME,
+                        "eventClassKey":"amqp","eventGroup":"amqp","component":"amqp", "severity":1,
+                        "user":username}
 
-            # Try to get time from the event itself
-            # TODO: UTC? datetime?
-            timestamp = msg.fields.get("timestamp", time.time())
-
-            # Send event
-            evt = dict(
-                        device=self._devId,
-                        eventClassKey=msg.fields.get("app_id", "amqp"),
-                        eventGroup='amqp',
-                        component=msg.fields.get("app_id", "amqp"),
-                        summary=msg.content.body,
-                        agent=COLLECTOR_NAME,
-                        severity=severity,
-                        monitor=self._preferences.options.monitor,
-                        user=username,
-                        originaltime=timestamp,
-                       )
+            if msg.content.properties == {'content type': 'application/json'}:
+                amqp_evt = json.loads(msg.content.body, encoding="latin1")
+                evt = dict(base_evt, **amqp_evt)
+            elif msg.content.properties == {'content type': 'text/plain'}:
+                evt = dict(base_evt, {'summary':msg.content.body})
+            else:
+                evt = base_evt
+            
+            #import pdb; pdb.set_trace()
             self._eventService.sendEvent(evt)
 
         # Never get here
