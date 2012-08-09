@@ -105,11 +105,11 @@ class AMQPEventsTask(ObservableMixin):
                         "eventClassKey":"amqp","eventGroup":"amqp","component":"amqp", "severity":1,
                         "user":username}
 
-            if msg.content.properties == {'content type': 'application/json'}:
+            if msg.content.properties == {'content type':'application/x-zenoss'}:
                 amqp_evt = json.loads(msg.content.body, encoding="latin1")
                 evt = dict(base_evt, **amqp_evt)
-            elif msg.content.properties == {'content type': 'text/plain'}:
-                evt = dict(base_evt, {'summary':msg.content.body})
+            elif msg.content.properties == {'content type':'text/plain'}:
+                evt = dict(base_evt, summary=msg.content.body)
             else:
                 evt = base_evt
             
